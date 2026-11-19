@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+client/dist/
+server/dist/
+
+# Generated MediaPipe WASM files (copied by `npm run copy:wasm` / `npm run build`)
+client/public/wasm/
+
+# Environment & OS files
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.log
+npm-debug.log*

@@ -1,0 +1,14 @@
+{
+  "name": "tello-gesture-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "End-to-end web application to control a DJI Tello drone over Wi-Fi using real-time browser webcam hand gesture recognition",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install && npm run copy:wasm",
+    "copy:wasm": "cp -r client/node_modules/@mediapipe/tasks-vision/wasm/* client/public/wasm/",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "build": "npm run copy:wasm && npm --prefix client run build && npm --prefix server run build",
+    "start": "npm --prefix server run start"
+  }
+}
