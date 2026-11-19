@@ -583,7 +583,7 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
             <ArrowLeft size={18} />
           </button>
           <div className="brand-mark compact">
-            <span className="brand-dot" aria-hidden="true" />
+            <img src="/logo.png" alt="AeroHand logo" className="brand-logo compact" width={28} height={28} />
             <span>AeroHand Cockpit</span>
           </div>
 

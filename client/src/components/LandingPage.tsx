@@ -51,7 +51,7 @@ export function LandingPage({ onLaunchCockpit }: LandingPageProps) {
       <header className="landing-nav">
         <div className="container nav-inner">
           <a href="#top" className="brand-mark">
-            <span className="brand-dot" aria-hidden="true" />
+            <img src="/logo.png" alt="AeroHand logo" className="brand-logo" width={34} height={34} />
             <span>AeroHand</span>
             <span className="brand-tag">TELLO WEB</span>
           </a>

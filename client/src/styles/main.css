@@ -245,6 +245,19 @@ code {
   font-size: 0.96rem;
 }
 
+.brand-logo {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 45%, transparent));
+}
+
+.brand-logo.compact {
+  width: 28px;
+  height: 28px;
+}
+
 .brand-dot {
   width: 10px;
   height: 10px;
