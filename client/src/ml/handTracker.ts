@@ -15,19 +15,27 @@ export class OfflineHandTracker {
   public async init(minConfidence = 0.65): Promise<void> {
     if (this.landmarker) return;
 
-    // 100% locally served WASM + model so it works offline while on TELLO-XXXXXX Wi-Fi
+    // 100% locally served (and PWA-cached) WASM + model so it works offline on Tello Wi-Fi
     const vision = await FilesetResolver.forVisionTasks('/wasm');
-    this.landmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath: '/models/hand_landmarker.task',
-        delegate: 'GPU',
-      },
-      runningMode: 'VIDEO',
-      numHands: 1,
-      minHandDetectionConfidence: minConfidence,
-      minHandPresenceConfidence: minConfidence,
-      minTrackingConfidence: 0.5,
-    });
+    const create = (delegate: 'GPU' | 'CPU') =>
+      HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: '/models/hand_landmarker.task',
+          delegate,
+        },
+        runningMode: 'VIDEO',
+        numHands: 1,
+        minHandDetectionConfidence: minConfidence,
+        minHandPresenceConfidence: minConfidence,
+        minTrackingConfidence: 0.5,
+      });
+
+    try {
+      this.landmarker = await create('GPU');
+    } catch {
+      // Mobile Safari / older Android WebGL fallback to CPU WASM
+      this.landmarker = await create('CPU');
+    }
   }
 
   public detectForVideo(video: HTMLVideoElement, timestampMs: number): HandLandmarkerResult | null {

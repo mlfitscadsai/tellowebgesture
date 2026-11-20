@@ -16,6 +16,7 @@ import {
   RotateCw,
   Settings2,
   Sliders,
+  SwitchCamera,
   Terminal,
   Thermometer,
   Wifi,
@@ -53,6 +54,8 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [mlReady, setMlReady] = useState(false);
   const [mlError, setMlError] = useState<string | null>(null);
   const [fps, setFps] = useState(0);
@@ -111,14 +114,26 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
     bufferRef.current.setBufferLength(settings.bufferLength);
   }, [settings.bufferLength]);
 
-  // Auto-connect simulator if launched in simulator mode once WS is ready
+  // Track browser online/offline state (shows users offline mode works seamlessly on Tello Wi-Fi)
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  // Auto-start 100% in-browser simulator immediately when launched in simulator mode (zero backend needed)
   const autoConnectedRef = useRef(false);
   useEffect(() => {
-    if (socket.wsConnected && !autoConnectedRef.current && initialMode === 'simulator' && !socket.droneConnected) {
+    if (!autoConnectedRef.current && initialMode === 'simulator') {
       autoConnectedRef.current = true;
       connectDrone('simulator');
     }
-  }, [socket.wsConnected, socket.droneConnected, initialMode, connectDrone]);
+  }, [initialMode, connectDrone]);
 
   // Load offline ML assets once
   useEffect(() => {
@@ -191,12 +206,17 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
     void refreshCameras();
   }, [refreshCameras]);
 
-  const startCamera = useCallback(async (deviceIdOverride?: string) => {
+  const startCamera = useCallback(async (deviceIdOverride?: string, facingOverride?: 'user' | 'environment') => {
     if (cameraStartingRef.current) return;
     cameraStartingRef.current = true;
     setCameraError(null);
 
     const targetDeviceId = deviceIdOverride !== undefined ? deviceIdOverride : selectedDeviceId;
+    const targetFacing = facingOverride ?? facingMode;
+    const isMobileViewport = window.matchMedia('(max-width: 820px)').matches;
+    const idealDims = isMobileViewport
+      ? { width: { ideal: 640 }, height: { ideal: 480 } }
+      : { width: { ideal: 960 }, height: { ideal: 540 } };
 
     const acquireStream = async (): Promise<MediaStream> => {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -205,13 +225,19 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
 
       const attempts: MediaStreamConstraints[] = targetDeviceId
         ? [
-            { video: { deviceId: { exact: targetDeviceId }, width: { ideal: 960 }, height: { ideal: 540 } }, audio: false },
+            { video: { deviceId: { exact: targetDeviceId }, ...idealDims }, audio: false },
             { video: { deviceId: { exact: targetDeviceId } }, audio: false },
           ]
-        : [
-            { video: { width: { ideal: 960 }, height: { ideal: 540 } }, audio: false },
-            { video: true, audio: false },
-          ];
+        : isMobileViewport || facingOverride !== undefined
+          ? [
+              { video: { facingMode: { ideal: targetFacing }, ...idealDims }, audio: false },
+              { video: { facingMode: targetFacing }, audio: false },
+              { video: true, audio: false },
+            ]
+          : [
+              { video: { ...idealDims }, audio: false },
+              { video: true, audio: false },
+            ];
 
       let lastErr: unknown;
       for (const constraints of attempts) {
@@ -321,7 +347,42 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
     } finally {
       cameraStartingRef.current = false;
     }
-  }, [selectedDeviceId, refreshCameras]);
+  }, [selectedDeviceId, facingMode, refreshCameras]);
+
+  const handleFlipCamera = useCallback(() => {
+    const nextFacing = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(nextFacing);
+    setSelectedDeviceId('');
+    setSettings((s) => ({ ...s, mirrorCamera: nextFacing === 'user' }));
+    if (cameraActive) {
+      stopCamera();
+      void startCamera('', nextFacing);
+    }
+  }, [facingMode, cameraActive, stopCamera, startCamera]);
+
+  const startTouchRc = useCallback(
+    (partial: Partial<RcVector>) => {
+      if (!droneConnectedRef.current || !inFlightRef.current) return;
+      const spd = Math.round(35 * settingsRef.current.speedScale);
+      const yawSpd = Math.round(45 * settingsRef.current.speedScale);
+      const rc: RcVector = {
+        lr: (partial.lr ?? 0) * spd,
+        fb: (partial.fb ?? 0) * spd,
+        ud: (partial.ud ?? 0) * spd,
+        yaw: (partial.yaw ?? 0) * yawSpd,
+      };
+      setActiveRc(rc);
+      sendRc(rc);
+    },
+    [sendRc],
+  );
+
+  const stopTouchRc = useCallback(() => {
+    setActiveRc(ZERO_RC);
+    if (droneConnectedRef.current) {
+      sendRc(ZERO_RC);
+    }
+  }, [sendRc]);
 
   useEffect(() => {
     return () => {
@@ -608,7 +669,6 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
             type="button"
             className={`btn btn-sm ${socket.droneConnected ? 'btn-secondary' : 'btn-primary'}`}
             onClick={handleConnectToggle}
-            disabled={!socket.wsConnected}
           >
             {socket.droneConnected ? (
               <>
@@ -699,12 +759,27 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
                     : 'DRONE OFFLINE'}
                 </span>
                 <span className="status-pill subtle">
-                  {mlReady ? 'MediaPipe Offline ML Ready' : mlError ? 'ML Error' : 'Loading Offline ML...'}
+                  {mlReady
+                    ? isOnline
+                      ? 'In-Browser ML Ready'
+                      : 'Offline ML Active ✓'
+                    : mlError
+                      ? 'ML Error'
+                      : 'Loading In-Browser ML...'}
                 </span>
               </div>
 
               <div className="camera-actions">
-                {cameras.length > 0 && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={handleFlipCamera}
+                  aria-label="Switch front and rear camera"
+                  title={`Switch camera (currently ${facingMode === 'user' ? 'Front' : 'Rear'})`}
+                >
+                  <SwitchCamera size={16} />
+                </button>
+                {cameras.length > 1 && (
                   <select
                     className="camera-select"
                     aria-label="Select webcam"
@@ -866,19 +941,19 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
                 className={`mode-btn ${controlMode === 'keyboard' ? 'active' : ''}`}
                 onClick={() => {
                   setControlMode('keyboard');
-                  socket.sendRc(ZERO_RC);
+                  sendRc(ZERO_RC);
                   setActiveRc(ZERO_RC);
                 }}
               >
                 <Gamepad2 size={16} />
-                <span>Keyboard (K)</span>
+                <span>Manual / Touch (K)</span>
               </button>
               <button
                 type="button"
                 className={`mode-btn ${controlMode === 'hover' ? 'active' : ''}`}
                 onClick={() => {
                   setControlMode('hover');
-                  socket.sendRc(ZERO_RC);
+                  sendRc(ZERO_RC);
                   setActiveRc(ZERO_RC);
                 }}
               >
@@ -887,10 +962,121 @@ export function FlightCockpit({ initialMode, onBackToLanding }: FlightCockpitPro
               </button>
             </div>
             {controlMode === 'keyboard' && (
-              <p className="keyboard-hint">
-                <code>W/A/S/D</code> Move • <code>R/F</code> Up/Down • <code>Q/E</code> Yaw • <code>Space</code>{' '}
-                Takeoff/Land
-              </p>
+              <>
+                <div className="touch-dpad-wrap" aria-label="Touch flight controls">
+                  <div className="touch-dpad">
+                    <span />
+                    <button
+                      type="button"
+                      className="dpad-btn"
+                      disabled={!socket.droneConnected || !socket.inFlight}
+                      onPointerDown={() => startTouchRc({ fb: 1 })}
+                      onPointerUp={stopTouchRc}
+                      onPointerLeave={stopTouchRc}
+                      onPointerCancel={stopTouchRc}
+                    >
+                      ↑ Fwd
+                    </button>
+                    <span />
+                    <button
+                      type="button"
+                      className="dpad-btn"
+                      disabled={!socket.droneConnected || !socket.inFlight}
+                      onPointerDown={() => startTouchRc({ lr: -1 })}
+                      onPointerUp={stopTouchRc}
+                      onPointerLeave={stopTouchRc}
+                      onPointerCancel={stopTouchRc}
+                    >
+                      ← Left
+                    </button>
+                    <button
+                      type="button"
+                      className="dpad-btn dpad-stop"
+                      disabled={!socket.droneConnected || !socket.inFlight}
+                      onClick={() => {
+                        stopTouchRc();
+                        sendCommand('stop');
+                      }}
+                    >
+                      Stop
+                    </button>
+                    <button
+                      type="button"
+                      className="dpad-btn"
+                      disabled={!socket.droneConnected || !socket.inFlight}
+                      onPointerDown={() => startTouchRc({ lr: 1 })}
+                      onPointerUp={stopTouchRc}
+                      onPointerLeave={stopTouchRc}
+                      onPointerCancel={stopTouchRc}
+                    >
+                      Right →
+                    </button>
+                    <span />
+                    <button
+                      type="button"
+                      className="dpad-btn"
+                      disabled={!socket.droneConnected || !socket.inFlight}
+                      onPointerDown={() => startTouchRc({ fb: -1 })}
+                      onPointerUp={stopTouchRc}
+                      onPointerLeave={stopTouchRc}
+                      onPointerCancel={stopTouchRc}
+                    >
+                      ↓ Back
+                    </button>
+                    <span />
+                  </div>
+                  <div className="touch-alt-yaw">
+                    <button
+                      type="button"
+                      className="dpad-btn"
+                      disabled={!socket.droneConnected || !socket.inFlight}
+                      onPointerDown={() => startTouchRc({ ud: 1 })}
+                      onPointerUp={stopTouchRc}
+                      onPointerLeave={stopTouchRc}
+                      onPointerCancel={stopTouchRc}
+                    >
+                      Up
+                    </button>
+                    <button
+                      type="button"
+                      className="dpad-btn"
+                      disabled={!socket.droneConnected || !socket.inFlight}
+                      onPointerDown={() => startTouchRc({ ud: -1 })}
+                      onPointerUp={stopTouchRc}
+                      onPointerLeave={stopTouchRc}
+                      onPointerCancel={stopTouchRc}
+                    >
+                      Down
+                    </button>
+                    <button
+                      type="button"
+                      className="dpad-btn"
+                      disabled={!socket.droneConnected || !socket.inFlight}
+                      onPointerDown={() => startTouchRc({ yaw: -1 })}
+                      onPointerUp={stopTouchRc}
+                      onPointerLeave={stopTouchRc}
+                      onPointerCancel={stopTouchRc}
+                    >
+                      ↺ CCW
+                    </button>
+                    <button
+                      type="button"
+                      className="dpad-btn"
+                      disabled={!socket.droneConnected || !socket.inFlight}
+                      onPointerDown={() => startTouchRc({ yaw: 1 })}
+                      onPointerUp={stopTouchRc}
+                      onPointerLeave={stopTouchRc}
+                      onPointerCancel={stopTouchRc}
+                    >
+                      ↻ CW
+                    </button>
+                  </div>
+                </div>
+                <p className="keyboard-hint">
+                  Desktop keys: <code>W/A/S/D</code> Move • <code>R/F</code> Up/Down • <code>Q/E</code> Yaw •{' '}
+                  <code>Space</code> Takeoff/Land
+                </p>
+              </>
             )}
           </div>
 

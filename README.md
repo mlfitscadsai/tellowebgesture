@@ -73,29 +73,15 @@ Because the backend uses persistent **WebSockets** (`/ws`) and serves the built 
    - **Environment Variables**: `PORT` is automatically set by Render/Railway (defaults to `3001`).
 4. Deploy! Both the Landing Page, Cockpit, MediaPipe WASM/models, and WebSocket Simulator backend will run under one `https://your-app.onrender.com` URL.
 
-### Option 2: Split Deploy — Frontend on Vercel + Backend on Render / Railway
-Vercel is ideal for static/Vite frontends, while Vercel Serverless Functions do not support long-lived WebSocket connections. Pair **Vercel** (frontend) with **Render or Railway** (WebSocket backend):
+### Option 2: Zero-Backend Static Deploy on Vercel (100% In-Browser ML + Simulator + Offline PWA)
+Because the MediaPipe HandLandmarker, 8-class Keypoint Classifier, and Tello Physics Simulator all run **100% inside the user's browser** (with an offline-first Service Worker caching the models), you can deploy `client/` directly to **Vercel**, **Netlify**, or **Cloudflare Pages** with **no backend server at all**:
 
-#### Step A — Deploy the Backend (`server/`) on Render or Railway
-- **Root Directory**: `tellowebgesture/server`
-- **Build Command**: `npm install && npm run build`
-- **Start Command**: `npm start`
-- Copy your deployed backend URL (e.g., `https://tello-bridge.onrender.com`).
-
-#### Step B — Deploy the Frontend (`client/`) on Vercel
-1. Import your repo into [Vercel](https://vercel.com) and set **Root Directory** to `tellowebgesture/client`.
-2. Configure Build & Output:
-   - **Framework Preset**: `Vite`
-   - **Install Command**: `npm install && cp -r node_modules/@mediapipe/tasks-vision/wasm/* public/wasm/`
-   - **Build Command**: `npm run build`
-   - **Output Directory**: `dist`
-3. Add **Environment Variables** in Vercel Project Settings:
-   ```env
-   VITE_WS_URL=wss://tello-bridge.onrender.com/ws
-   VITE_API_URL=https://tello-bridge.onrender.com
-   ```
-   *(If you want the Vercel-hosted UI to control a real Tello via your own laptop's local bridge, you can instead run `npm run dev:server` locally and set `VITE_WS_URL=ws://localhost:3001/ws`.)*
-4. Click **Deploy**.
+1. Import your repo into [Vercel](https://vercel.com) and set **Root Directory** to `client`.
+2. Leave **Framework Preset** as `Vite` and **Build Command** as `npm run build` (the `prebuild` script automatically copies MediaPipe WASM into `public/wasm/`).
+3. Click **Deploy**.
+4. Open the HTTPS URL on **Desktop, iPhone Safari, Android Chrome, or iPad**:
+   - Once loaded once, the Service Worker caches the app + ML models (`hand_landmarker.task` + `keypoint_classifier_weights.json` + WASM), so it keeps working even if you disconnect home Wi-Fi!
+   - Optional: If you also deploy `server/` on Render/Railway (or run `npm start` locally for real Tello UDP flight), add `VITE_WS_URL` and `VITE_API_URL` in Vercel Project Settings.
 
 ### Option 3: Deploy with Vercel CLI (Quick Preview of Frontend)
 ```bash

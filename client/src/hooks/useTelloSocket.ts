@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { BrowserTelloSimulator } from '../sim/browserSimulator';
 import {
   INITIAL_TELEMETRY,
   type DroneMode,
@@ -20,10 +21,16 @@ interface SocketState {
   logs: LogEntry[];
 }
 
+/**
+ * Hybrid drone transport:
+ * - `simulator` mode runs 100% inside the user's browser (zero backend, works on Vercel & offline).
+ * - `tello` mode connects to the local Node.js UDP bridge (`/ws` or `VITE_WS_URL`) for real DJI Tello Wi-Fi control.
+ */
 export function useTelloSocket() {
   const wsRef = useRef<WebSocket | null>(null);
+  const simRef = useRef<BrowserTelloSimulator | null>(null);
+  const activeModeRef = useRef<DroneMode>('simulator');
   const logIdRef = useRef(1);
-  const reconnectTimerRef = useRef<number | null>(null);
   const pingTimerRef = useRef<number | null>(null);
 
   const [state, setState] = useState<SocketState>({
@@ -33,7 +40,7 @@ export function useTelloSocket() {
     inFlight: false,
     host: '192.168.10.1',
     port: 8889,
-    statusMessage: 'Connecting to local Tello bridge...',
+    statusMessage: '100% In-Browser Simulator ready. Switch to Real Tello for local UDP bridge.',
     latencyMs: null,
     telemetry: INITIAL_TELEMETRY,
     logs: [],
@@ -46,33 +53,108 @@ export function useTelloSocket() {
     }));
   }, []);
 
-  const sendJson = useCallback((payload: unknown) => {
+  // Initialize pure in-browser simulator once
+  useEffect(() => {
+    const sim = new BrowserTelloSimulator({
+      onTelemetry: (data) => {
+        if (activeModeRef.current !== 'simulator') return;
+        setState((prev) => ({
+          ...prev,
+          telemetry: data,
+          inFlight: data.inFlight,
+          droneConnected: data.connected,
+        }));
+      },
+      onLog: (level, text) => appendLog(level, text),
+      onStatus: (connected, inFlight, message) => {
+        if (activeModeRef.current !== 'simulator') return;
+        setState((prev) => ({
+          ...prev,
+          droneConnected: connected,
+          inFlight,
+          mode: 'simulator',
+          host: 'In-Browser (Offline)',
+          statusMessage: message,
+        }));
+      },
+    });
+    simRef.current = sim;
+
+    return () => {
+      sim.disconnect(true);
+      simRef.current = null;
+      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
+      wsRef.current?.close();
+    };
+  }, [appendLog]);
+
+  const closeBridgeWs = useCallback(() => {
+    if (pingTimerRef.current) {
+      clearInterval(pingTimerRef.current);
+      pingTimerRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setState((prev) => ({ ...prev, wsConnected: false }));
+  }, []);
+
+  const sendBridgeJson = useCallback((payload: unknown) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload));
     }
   }, []);
 
-  useEffect(() => {
-    let active = true;
+  const connectDrone = useCallback(
+    (mode: DroneMode, host = '192.168.10.1', port = 8889) => {
+      activeModeRef.current = mode;
 
-    const connectWs = () => {
-      if (!active) return;
+      if (mode === 'simulator') {
+        closeBridgeWs();
+        simRef.current?.connect();
+        return;
+      }
+
+      // Real Tello mode: stop browser simulator and connect to local UDP WebSocket bridge
+      simRef.current?.disconnect(true);
+      closeBridgeWs();
+
       const configuredWs = import.meta.env.VITE_WS_URL as string | undefined;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = configuredWs && configuredWs.trim() ? configuredWs.trim() : `${protocol}//${window.location.host}/ws`;
-      const ws = new WebSocket(wsUrl);
+      const wsUrl =
+        configuredWs && configuredWs.trim() ? configuredWs.trim() : `${protocol}//${window.location.host}/ws`;
+
+      setState((prev) => ({
+        ...prev,
+        mode: 'tello',
+        host,
+        port,
+        statusMessage: `Connecting to local Tello bridge (${wsUrl})...`,
+      }));
+      appendLog('info', `Connecting to Tello UDP bridge at ${wsUrl}...`);
+
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch (err) {
+        appendLog('error', `Could not open WebSocket bridge: ${String(err)}`);
+        setState((prev) => ({
+          ...prev,
+          wsConnected: false,
+          droneConnected: false,
+          statusMessage: 'Local UDP bridge unavailable. Run `npm start` on the laptop joined to Tello Wi-Fi.',
+        }));
+        return;
+      }
+
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!active) return;
-        setState((prev) => ({
-          ...prev,
-          wsConnected: true,
-          statusMessage: 'Bridge online. Ready to connect to Tello Wi-Fi or Simulator.',
-        }));
-        appendLog('info', 'Connected to local WebSocket bridge (/ws)');
-
+        setState((prev) => ({ ...prev, wsConnected: true }));
+        ws.send(JSON.stringify({ type: 'connect', mode: 'tello', host, port }));
         pingTimerRef.current = window.setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ping', clientTime: Date.now() }));
@@ -81,14 +163,14 @@ export function useTelloSocket() {
       };
 
       ws.onmessage = (event) => {
-        if (!active) return;
+        if (activeModeRef.current !== 'tello') return;
         try {
           const msg = JSON.parse(event.data as string);
           if (msg.type === 'status') {
             setState((prev) => ({
               ...prev,
               droneConnected: Boolean(msg.connected),
-              mode: msg.mode ?? prev.mode,
+              mode: 'tello',
               inFlight: Boolean(msg.inFlight),
               host: msg.host ?? prev.host,
               port: msg.port ?? prev.port,
@@ -114,54 +196,65 @@ export function useTelloSocket() {
         }
       };
 
+      ws.onerror = () => {
+        appendLog(
+          'error',
+          'Could not reach local Tello UDP bridge. For real drone flight, run `npm start` locally while connected to TELLO-XXXXXX Wi-Fi (or use Simulator Mode in any browser).',
+        );
+      };
+
       ws.onclose = () => {
         if (pingTimerRef.current) {
           clearInterval(pingTimerRef.current);
           pingTimerRef.current = null;
         }
-        if (!active) return;
         setState((prev) => ({
           ...prev,
           wsConnected: false,
-          statusMessage: 'Bridge disconnected — retrying...',
+          droneConnected: false,
+          inFlight: false,
+          statusMessage: 'Tello UDP bridge disconnected.',
         }));
-        reconnectTimerRef.current = window.setTimeout(connectWs, 2000);
       };
-    };
-
-    connectWs();
-
-    return () => {
-      active = false;
-      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
-      wsRef.current?.close();
-    };
-  }, [appendLog]);
-
-  const connectDrone = useCallback(
-    (mode: DroneMode, host = '192.168.10.1', port = 8889) => {
-      sendJson({ type: 'connect', mode, host, port });
     },
-    [sendJson],
+    [appendLog, closeBridgeWs],
   );
 
   const disconnectDrone = useCallback(() => {
-    sendJson({ type: 'disconnect' });
-  }, [sendJson]);
+    if (activeModeRef.current === 'simulator') {
+      simRef.current?.disconnect();
+    } else {
+      sendBridgeJson({ type: 'disconnect' });
+      closeBridgeWs();
+      setState((prev) => ({
+        ...prev,
+        droneConnected: false,
+        inFlight: false,
+        statusMessage: 'Disconnected from Tello',
+      }));
+    }
+  }, [closeBridgeWs, sendBridgeJson]);
 
   const sendCommand = useCallback(
     (command: string) => {
-      sendJson({ type: 'command', command });
+      if (activeModeRef.current === 'simulator') {
+        simRef.current?.sendCommand(command);
+      } else {
+        sendBridgeJson({ type: 'command', command });
+      }
     },
-    [sendJson],
+    [sendBridgeJson],
   );
 
   const sendRc = useCallback(
     (rc: RcVector) => {
-      sendJson({ type: 'rc', ...rc });
+      if (activeModeRef.current === 'simulator') {
+        simRef.current?.sendRc(rc);
+      } else {
+        sendBridgeJson({ type: 'rc', ...rc });
+      }
     },
-    [sendJson],
+    [sendBridgeJson],
   );
 
   const clearLogs = useCallback(() => {

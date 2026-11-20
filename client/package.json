@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 5173",
+    "prebuild": "mkdir -p public/wasm && cp -r node_modules/@mediapipe/tasks-vision/wasm/* public/wasm/",
     "build": "tsc && vite build",
     "preview": "vite preview --port 4173"
   },

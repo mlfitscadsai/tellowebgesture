@@ -1,0 +1,23 @@
+{
+  "name": "AeroHand — DJI Tello Gesture Control",
+  "short_name": "AeroHand",
+  "description": "Control your DJI Tello drone or practice in the built-in simulator using 100% on-device browser hand gesture recognition — works offline on desktop, iPhone, Android, and tablets.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070b14",
+  "theme_color": "#070b14",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "64x64",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
